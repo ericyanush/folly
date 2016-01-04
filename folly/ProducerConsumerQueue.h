@@ -20,10 +20,9 @@
 #ifndef PRODUCER_CONSUMER_QUEUE_H_
 #define PRODUCER_CONSUMER_QUEUE_H_
 
+#include <new>
 #include <atomic>
-#include <cassert>
 #include <cstdlib>
-#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -33,7 +32,7 @@ namespace folly {
  * ProducerConsumerQueue is a one producer and one consumer queue
  * without locks.
  */
-template<class T>
+template<class T, uint32_t size>
 struct ProducerConsumerQueue {
   typedef T value_type;
 
@@ -45,16 +44,11 @@ struct ProducerConsumerQueue {
   // Also, note that the number of usable slots in the queue at any
   // given time is actually (size-1), so if you start with an empty queue,
   // isFull() will return true after size-1 insertions.
-  explicit ProducerConsumerQueue(uint32_t size)
-    : size_(size)
-    , records_(static_cast<T*>(std::malloc(sizeof(T) * size)))
-    , readIndex_(0)
+  explicit ProducerConsumerQueue()
+    : readIndex_(0)
     , writeIndex_(0)
   {
-    assert(size >= 2);
-    if (!records_) {
-      throw std::bad_alloc();
-    }
+    static_assert(size >= 2, "Queue Size must be >= 2");
   }
 
   ~ProducerConsumerQueue() {
@@ -66,20 +60,18 @@ struct ProducerConsumerQueue {
       size_t end = writeIndex_;
       while (read != end) {
         records_[read].~T();
-        if (++read == size_) {
+        if (++read == size) {
           read = 0;
         }
       }
     }
-
-    std::free(records_);
   }
 
   template<class ...Args>
   bool write(Args&&... recordArgs) {
     auto const currentWrite = writeIndex_.load(std::memory_order_relaxed);
     auto nextRecord = currentWrite + 1;
-    if (nextRecord == size_) {
+    if (nextRecord == size) {
       nextRecord = 0;
     }
     if (nextRecord != readIndex_.load(std::memory_order_acquire)) {
@@ -101,7 +93,7 @@ struct ProducerConsumerQueue {
     }
 
     auto nextRecord = currentRead + 1;
-    if (nextRecord == size_) {
+    if (nextRecord == size) {
       nextRecord = 0;
     }
     record = std::move(records_[currentRead]);
@@ -124,10 +116,9 @@ struct ProducerConsumerQueue {
   // queue must not be empty
   void popFront() {
     auto const currentRead = readIndex_.load(std::memory_order_relaxed);
-    assert(currentRead != writeIndex_.load(std::memory_order_acquire));
-
+      
     auto nextRecord = currentRead + 1;
-    if (nextRecord == size_) {
+    if (nextRecord == size) {
       nextRecord = 0;
     }
     records_[currentRead].~T();
@@ -141,7 +132,7 @@ struct ProducerConsumerQueue {
 
   bool isFull() const {
     auto nextRecord = writeIndex_.load(std::memory_order_consume) + 1;
-    if (nextRecord == size_) {
+    if (nextRecord == size) {
       nextRecord = 0;
     }
     if (nextRecord != readIndex_.load(std::memory_order_consume)) {
@@ -160,14 +151,13 @@ struct ProducerConsumerQueue {
     int ret = writeIndex_.load(std::memory_order_consume) -
               readIndex_.load(std::memory_order_consume);
     if (ret < 0) {
-      ret += size_;
+      ret += size;
     }
     return ret;
   }
 
 private:
-  const uint32_t size_;
-  T* const records_;
+  T records_[size];
 
   std::atomic<unsigned int> readIndex_;
   std::atomic<unsigned int> writeIndex_;
